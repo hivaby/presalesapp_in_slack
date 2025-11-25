@@ -1,0 +1,16 @@
+name = "markany-slack-assistant"
+main = "worker/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+ENVIRONMENT = "production"
+
+# Secrets (설정 방법: wrangler secret put <SECRET_NAME>)
+# - SLACK_BOT_TOKEN: Slack Bot User OAuth Token
+# - SLACK_SIGNING_SECRET: Slack App Signing Secret
+# - GEMINI_API_KEY: Google Gemini API Key
+
+# Optional: Cloudflare KV for caching (향후 사용)
+# [[kv_namespaces]]
+# binding = "CACHE"
+# id = "your-kv-namespace-id"

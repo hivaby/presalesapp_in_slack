@@ -34,11 +34,8 @@ You are MarkAny Slack AI Assistant specializing in:
 한국어 질문에는 한국어로, 영어 질문에는 영어로 응답하세요.
 `;
 
-// Gemini 클라이언트 생성
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-
 // MarkAny 보안 분류기 - Prompt Injection Firewall
-async function classifyPrompt(prompt) {
+async function classifyPrompt(prompt, apiKey) {
   // 1차: 패턴 기반 빠른 검증
   const dangerousPatterns = [
     /ignore.*previous.*instructions/i,
@@ -50,7 +47,7 @@ async function classifyPrompt(prompt) {
     /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/, // 이메일 패턴
     /\b\d{6}-\d{7}\b/ // 주민번호 패턴
   ];
-  
+
   if (dangerousPatterns.some(pattern => pattern.test(prompt))) {
     return 'SECURITY_RISK';
   }
@@ -69,6 +66,7 @@ Message: "${prompt}"
 Return only the classification label.`;
 
   try {
+    const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const result = await model.generateContent(classifier);
     return result.response.text().trim();
@@ -87,15 +85,15 @@ export function detectProduct(query) {
     'ScreenSafer': ['screensafer', '화면캡처', '스크린샷', 'screen capture'],
     'AI Sentinel': ['ai sentinel', 'ai보안', 'ai 보안', 'artificial intelligence']
   };
-  
+
   const lowerQuery = query.toLowerCase();
-  
+
   for (const [product, keywords] of Object.entries(productKeywords)) {
     if (keywords.some(keyword => lowerQuery.includes(keyword))) {
       return product;
     }
   }
-  
+
   return null;
 }
 
@@ -125,15 +123,22 @@ export function getProductSpecificPrompt(productType) {
     'ScreenSafer': 'ScreenSafer 관련 질문입니다. 화면 캡처 방지에 중점을 두어 답변해주세요.',
     'AI Sentinel': 'AI Sentinel 관련 질문입니다. AI 보안 솔루션에 중점을 두어 답변해주세요.'
   };
-  
+
   return prompts[productType] || '';
 }
 
 // MarkAny AI 메인 함수 - 보안 방화벽 포함
-export async function runAI(userPrompt, ragContext = '', conversationHistory = '') {
+export async function runAI(userPrompt, ragContext = '', conversationHistory = '', apiKey = null) {
+  // Use apiKey parameter or fallback to process.env for backward compatibility
+  const geminiApiKey = apiKey || process.env.GEMINI_API_KEY;
+
+  if (!geminiApiKey) {
+    throw new Error('GEMINI_API_KEY is required');
+  }
+
   // 1. 보안 분류
-  const category = await classifyPrompt(userPrompt);
-  
+  const category = await classifyPrompt(userPrompt, geminiApiKey);
+
   if (['SECURITY_RISK', 'INJECTION_ATTEMPT', 'CONFIDENTIAL_DATA_REQUEST'].includes(category)) {
     return `⚠️ **보안 정책 차단**\n\n이 요청은 MarkAny 보안 정책에 따라 처리할 수 없습니다.\n\n• 개인정보가 포함된 질문\n• 시스템 규칙 변경 시도\n• 기밀정보 요청\n\n문의사항이 있으시면 IT팀(<#C1234567890>)에 연락해주세요.`;
   }
@@ -162,7 +167,8 @@ ${productPrompt}
 ${userPrompt}`;
 
   try {
-    const model = genAI.getGenerativeModel({ 
+    const genAI = new GoogleGenerativeAI(geminiApiKey);
+    const model = genAI.getGenerativeModel({
       model: "gemini-1.5-flash",
       generationConfig: {
         temperature: 0.7,
@@ -171,10 +177,10 @@ ${userPrompt}`;
         maxOutputTokens: 2048,
       }
     });
-    
+
     const result = await model.generateContent(systemPrompt);
     const response = result.response.text();
-    
+
     // 응답에서 민감정보 필터링
     return filterSensitiveResponse(response);
   } catch (error) {
@@ -186,27 +192,27 @@ ${userPrompt}`;
 // 답변 포맷팅
 export function formatResponse(answer, sources = []) {
   let formatted = answer;
-  
+
   if (sources.length > 0) {
     const driveDocuments = sources.filter(s => s.type === 'drive_document');
     const slackMessages = sources.filter(s => s.type === 'slack_message');
-    
+
     if (driveDocuments.length > 0) {
       formatted += '\n\n📄 **출처 문서:**\n';
       driveDocuments.forEach(doc => {
         formatted += `• [${doc.title}](${doc.url})\n`;
       });
     }
-    
+
     if (slackMessages.length > 0) {
       formatted += '\n📎 **관련 Slack 메시지:**\n';
       slackMessages.forEach(msg => {
         formatted += `• [#${msg.channel}](${msg.permalink})\n`;
       });
     }
-    
+
     formatted += '\n---\n💡 *MarkAny AI Assistant* | 추가 질문이 있으시면 언제든 말씀해주세요!';
   }
-  
+
   return formatted;
 }
