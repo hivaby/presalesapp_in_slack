@@ -14,7 +14,7 @@ export class MarkAnyRAG {
     // - PDF/HWP/PPTX/DOCX 파싱
     // - Vector embedding 생성
     // - 유사도 검색
-    
+
     // 임시 Mock 데이터 (실제 구현 시 Google Drive API 사용)
     const mockDocuments = [
       {
@@ -48,9 +48,9 @@ export class MarkAnyRAG {
 
     // 키워드 기반 필터링 (실제로는 벡터 유사도 검색)
     const keywords = query.toLowerCase().split(' ');
-    const filtered = mockDocuments.filter(doc => 
-      keywords.some(keyword => 
-        doc.title.toLowerCase().includes(keyword) || 
+    const filtered = mockDocuments.filter(doc =>
+      keywords.some(keyword =>
+        doc.title.toLowerCase().includes(keyword) ||
         doc.snippet.toLowerCase().includes(keyword)
       )
     ).slice(0, limit);
@@ -58,36 +58,81 @@ export class MarkAnyRAG {
     return filtered;
   }
 
-  // Slack 메시지 검색 (보안 필터링 포함)
+  // Slack 메시지 검색 (conversations.history 기반)
   async searchSlackMessages(query, client, limit = 5) {
     try {
-      const result = await client.search.messages({
-        query: query,
-        count: limit,
-        sort: 'score'
-      });
+      // Get list of public channels
+      const channelsResponse = await client.getChannels(50);
+      const channels = channelsResponse.channels || [];
 
-      const messages = result.messages?.matches?.map(match => ({
-        text: this.filterSensitiveContent(match.text),
-        user: match.user,
-        channel: match.channel?.name,
-        permalink: match.permalink,
-        ts: match.ts,
-        score: match.score,
-        type: "slack_message"
-      })) || [];
+      const keywords = query.toLowerCase().split(' ').filter(k => k.length > 1);
+      const results = [];
 
-      // 민감한 채널 제외 (예: #hr, #finance 등)
+      // Search through recent messages in each channel
+      for (const channel of channels.slice(0, 20)) { // Limit to 20 channels for performance
+        try {
+          const historyResponse = await client.getHistory(channel.id, 100);
+          const messages = historyResponse.messages || [];
+
+          // Filter messages by keywords
+          const matches = messages
+            .filter(msg => {
+              if (!msg.text || msg.subtype) return false; // Skip special messages
+              const text = msg.text.toLowerCase();
+              return keywords.some(kw => text.includes(kw));
+            })
+            .map(msg => ({
+              text: this.filterSensitiveContent(msg.text),
+              channel: channel.name,
+              ts: msg.ts,
+              score: this.calculateRelevanceScore(msg.text, keywords),
+              type: "slack_message"
+            }));
+
+          results.push(...matches);
+
+          if (results.length >= limit * 2) break; // Get extra for filtering
+        } catch (error) {
+          console.error(`Error searching channel ${channel.name}:`, error);
+          continue;
+        }
+      }
+
+      // Filter sensitive channels and sort by score
       const sensitiveChannels = ['hr', 'finance', 'salary', 'personal'];
-      return messages.filter(msg => 
-        !sensitiveChannels.some(sensitive => 
-          msg.channel?.toLowerCase().includes(sensitive)
+      const filtered = results
+        .filter(msg =>
+          !sensitiveChannels.some(sensitive =>
+            msg.channel?.toLowerCase().includes(sensitive)
+          )
         )
-      );
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+
+      return filtered;
     } catch (error) {
       console.error('Slack search error:', error);
       return [];
     }
+  }
+
+  // Calculate relevance score for a message
+  calculateRelevanceScore(text, keywords) {
+    const lowerText = text.toLowerCase();
+    let score = 0;
+
+    keywords.forEach(keyword => {
+      const count = (lowerText.match(new RegExp(keyword, 'g')) || []).length;
+      score += count * 10;
+    });
+
+    // Boost score for exact phrase matches
+    const queryPhrase = keywords.join(' ');
+    if (lowerText.includes(queryPhrase)) {
+      score += 50;
+    }
+
+    return score;
   }
 
   // MarkAny 제품별 전문 검색
@@ -131,7 +176,7 @@ export class MarkAnyRAG {
       // 2. Slack 메시지 검색 (클라이언트가 있는 경우)
       if (slackClient) {
         results.slackMessages = await this.searchSlackMessages(query, slackClient);
-        
+
         // 3. 제품별 전문 검색 추가
         const productType = this.detectProductFromQuery(query);
         if (productType) {
@@ -162,13 +207,13 @@ export class MarkAnyRAG {
     };
 
     const lowerQuery = query.toLowerCase();
-    
+
     for (const [product, keywords] of Object.entries(productKeywords)) {
       if (keywords.some(keyword => lowerQuery.includes(keyword))) {
         return product;
       }
     }
-    
+
     return null;
   }
 

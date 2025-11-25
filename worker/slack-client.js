@@ -65,6 +65,14 @@ export class SlackClient {
         });
     }
 
+    async getChannels(limit = 100) {
+        return this.request('conversations.list', {
+            types: 'public_channel',
+            limit,
+            exclude_archived: true
+        });
+    }
+
     // Users methods
     async getUserInfo(user) {
         return this.request('users.info', {

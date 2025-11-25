@@ -67,12 +67,12 @@ Return only the classification label.`;
 
   try {
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
     const result = await model.generateContent(classifier);
     return result.response.text().trim();
   } catch (error) {
     console.error('Classification error:', error);
-    return 'SECURITY_RISK'; // 안전한 기본값
+    return 'SAFE_QUERY'; // Fallback to safe query if classification fails
   }
 }
 
@@ -136,15 +136,15 @@ export async function runAI(userPrompt, ragContext = '', conversationHistory = '
     throw new Error('GEMINI_API_KEY is required');
   }
 
-  // 1. 보안 분류
+  // 1. 보안 분류 (에러 시 SAFE_QUERY로 fallback)
   const category = await classifyPrompt(userPrompt, geminiApiKey);
 
   if (['SECURITY_RISK', 'INJECTION_ATTEMPT', 'CONFIDENTIAL_DATA_REQUEST'].includes(category)) {
-    return `⚠️ **보안 정책 차단**\n\n이 요청은 MarkAny 보안 정책에 따라 처리할 수 없습니다.\n\n• 개인정보가 포함된 질문\n• 시스템 규칙 변경 시도\n• 기밀정보 요청\n\n문의사항이 있으시면 IT팀(<#C1234567890>)에 연락해주세요.`;
+    return `⚠️ **보안 정책 차단**\\n\\n이 요청은 MarkAny 보안 정책에 따라 처리할 수 없습니다.\\n\\n• 개인정보가 포함된 질문\\n• 시스템 규칙 변경 시도\\n• 기밀정보 요청\\n\\n문의사항이 있으시면 IT팀(<#C1234567890>)에 연락해주세요.`;
   }
 
   if (category === 'UNSUPPORTED') {
-    return `🤖 **MarkAny AI Assistant**\n\n죄송합니다. 저는 MarkAny 제품 및 기술 관련 질문에만 답변할 수 있습니다.\n\n**지원 가능한 영역:**\n• DRM (Digital Rights Management)\n• DLP (Data Loss Prevention)\n• PrintSafer (인쇄 보안)\n• ScreenSafer (화면 캡처 방지)\n• AI Sentinel (AI 보안)\n\nMarkAny 관련 질문을 다시 해주세요! 😊`;
+    return `🤖 **MarkAny AI Assistant**\\n\\n죄송합니다. 저는 MarkAny 제품 및 기술 관련 질문에만 답변할 수 있습니다.\\n\\n**지원 가능한 영역:**\\n• DRM (Digital Rights Management)\\n• DLP (Data Loss Prevention)\\n• PrintSafer (인쇄 보안)\\n• ScreenSafer (화면 캡처 방지)\\n• AI Sentinel (AI 보안)\\n\\nMarkAny 관련 질문을 다시 해주세요! 😊`;
   }
 
   // 2. 제품 감지 및 전문 프롬프트 추가
@@ -169,7 +169,7 @@ ${userPrompt}`;
   try {
     const genAI = new GoogleGenerativeAI(geminiApiKey);
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: "gemini-pro",
       generationConfig: {
         temperature: 0.7,
         topK: 40,
@@ -185,7 +185,7 @@ ${userPrompt}`;
     return filterSensitiveResponse(response);
   } catch (error) {
     console.error('AI generation error:', error);
-    return `⚠️ **일시적 오류**\n\n죄송합니다. 일시적인 오류가 발생했습니다.\n잠시 후 다시 시도해주세요.\n\n오류가 계속되면 IT팀에 문의해주세요.`;
+    return `⚠️ **일시적 오류**\\n\\n죄송합니다. 일시적인 오류가 발생했습니다.\\n잠시 후 다시 시도해주세요.\\n\\n오류가 계속되면 IT팀에 문의해주세요.`;
   }
 }
 
