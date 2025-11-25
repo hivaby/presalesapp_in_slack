@@ -1,0 +1,299 @@
+// MarkAny RAG (Retrieval-Augmented Generation) Module
+// Google Drive + Slack Workspace Knowledge Integration
+
+export class MarkAnyRAG {
+  constructor() {
+    this.vectorDB = new Map(); // 간단한 메모리 저장소 (향후 Pinecone/Chroma 연동)
+    this.slackCache = new Map();
+    this.driveCache = new Map();
+  }
+
+  // Google Drive 문서 검색
+  async searchDriveDocuments(query, limit = 5) {
+    // TODO: Google Drive API 연동
+    // - PDF/HWP/PPTX/DOCX 파싱
+    // - Vector embedding 생성
+    // - 유사도 검색
+    
+    // 임시 Mock 데이터 (실제 구현 시 Google Drive API 사용)
+    const mockDocuments = [
+      {
+        title: "MarkAny DRM 제품 가이드 v2.1",
+        url: "https://drive.google.com/file/d/1234567890abcdef/view",
+        snippet: "DRM 솔루션은 디지털 콘텐츠의 무단 복제와 배포를 방지하는 기술입니다. 문서 암호화, 권한 관리, 워터마크 등의 기능을 제공합니다.",
+        score: 0.95,
+        type: "drive_document",
+        lastModified: "2024-01-15",
+        author: "MarkAny 기술팀"
+      },
+      {
+        title: "DLP 솔루션 기술 명세서",
+        url: "https://drive.google.com/file/d/abcdef1234567890/view",
+        snippet: "데이터 유출 방지(DLP) 솔루션은 민감한 정보의 외부 유출을 실시간으로 탐지하고 차단합니다.",
+        score: 0.88,
+        type: "drive_document",
+        lastModified: "2024-01-10",
+        author: "MarkAny 개발팀"
+      },
+      {
+        title: "PrintSafer 설치 및 운영 가이드",
+        url: "https://drive.google.com/file/d/567890abcdef1234/view",
+        snippet: "PrintSafer는 인쇄 시 자동으로 워터마크를 삽입하여 문서의 출처를 추적할 수 있게 합니다.",
+        score: 0.82,
+        type: "drive_document",
+        lastModified: "2024-01-08",
+        author: "MarkAny PS팀"
+      }
+    ];
+
+    // 키워드 기반 필터링 (실제로는 벡터 유사도 검색)
+    const keywords = query.toLowerCase().split(' ');
+    const filtered = mockDocuments.filter(doc => 
+      keywords.some(keyword => 
+        doc.title.toLowerCase().includes(keyword) || 
+        doc.snippet.toLowerCase().includes(keyword)
+      )
+    ).slice(0, limit);
+
+    return filtered;
+  }
+
+  // Slack 메시지 검색 (보안 필터링 포함)
+  async searchSlackMessages(query, client, limit = 5) {
+    try {
+      const result = await client.search.messages({
+        query: query,
+        count: limit,
+        sort: 'score'
+      });
+
+      const messages = result.messages?.matches?.map(match => ({
+        text: this.filterSensitiveContent(match.text),
+        user: match.user,
+        channel: match.channel?.name,
+        permalink: match.permalink,
+        ts: match.ts,
+        score: match.score,
+        type: "slack_message"
+      })) || [];
+
+      // 민감한 채널 제외 (예: #hr, #finance 등)
+      const sensitiveChannels = ['hr', 'finance', 'salary', 'personal'];
+      return messages.filter(msg => 
+        !sensitiveChannels.some(sensitive => 
+          msg.channel?.toLowerCase().includes(sensitive)
+        )
+      );
+    } catch (error) {
+      console.error('Slack search error:', error);
+      return [];
+    }
+  }
+
+  // MarkAny 제품별 전문 검색
+  async searchByProduct(productType, query, client) {
+    const productChannels = {
+      'DRM': ['drm-support', 'document-security', 'tech-drm'],
+      'DLP': ['dlp-support', 'data-protection', 'tech-dlp'],
+      'PrintSafer': ['printsafer-support', 'print-security'],
+      'ScreenSafer': ['screensafer-support', 'screen-protection'],
+      'AI Sentinel': ['ai-sentinel', 'ai-security']
+    };
+
+    const channels = productChannels[productType] || [];
+    let productResults = [];
+
+    for (const channel of channels) {
+      try {
+        const channelQuery = `in:#${channel} ${query}`;
+        const results = await this.searchSlackMessages(channelQuery, client, 3);
+        productResults = productResults.concat(results);
+      } catch (error) {
+        console.error(`Error searching channel ${channel}:`, error);
+      }
+    }
+
+    return productResults.slice(0, 5);
+  }
+
+  // 통합 RAG 검색
+  async search(query, slackClient = null) {
+    const results = {
+      documents: [],
+      slackMessages: [],
+      context: ''
+    };
+
+    try {
+      // 1. Google Drive 검색
+      results.documents = await this.searchDriveDocuments(query);
+
+      // 2. Slack 메시지 검색 (클라이언트가 있는 경우)
+      if (slackClient) {
+        results.slackMessages = await this.searchSlackMessages(query, slackClient);
+        
+        // 3. 제품별 전문 검색 추가
+        const productType = this.detectProductFromQuery(query);
+        if (productType) {
+          const productMessages = await this.searchByProduct(productType, query, slackClient);
+          results.slackMessages = [...results.slackMessages, ...productMessages]
+            .slice(0, 8); // 중복 제거 및 제한
+        }
+      }
+
+      // 4. 컨텍스트 생성
+      results.context = this.buildContext(results.documents, results.slackMessages);
+
+      return results;
+    } catch (error) {
+      console.error('RAG search error:', error);
+      return results;
+    }
+  }
+
+  // 제품 감지
+  detectProductFromQuery(query) {
+    const productKeywords = {
+      'DRM': ['drm', '문서보안', '암호화', '권한관리'],
+      'DLP': ['dlp', '데이터유출', '정보유출'],
+      'PrintSafer': ['printsafer', '인쇄보안', '워터마크'],
+      'ScreenSafer': ['screensafer', '화면캡처', '스크린샷'],
+      'AI Sentinel': ['ai sentinel', 'ai보안']
+    };
+
+    const lowerQuery = query.toLowerCase();
+    
+    for (const [product, keywords] of Object.entries(productKeywords)) {
+      if (keywords.some(keyword => lowerQuery.includes(keyword))) {
+        return product;
+      }
+    }
+    
+    return null;
+  }
+
+  // RAG 컨텍스트 구성
+  buildContext(documents, slackMessages) {
+    let context = '';
+
+    if (documents.length > 0) {
+      context += '[MARKANY_DRIVE_DOCUMENTS]\n';
+      documents.forEach(doc => {
+        context += `제목: ${doc.title}\n`;
+        context += `내용: ${doc.snippet}\n`;
+        context += `수정일: ${doc.lastModified}\n`;
+        context += `작성자: ${doc.author}\n\n`;
+      });
+    }
+
+    if (slackMessages.length > 0) {
+      context += '[MARKANY_SLACK_KNOWLEDGE]\n';
+      slackMessages.forEach(msg => {
+        context += `채널: #${msg.channel}\n`;
+        context += `내용: ${msg.text.substring(0, 200)}...\n`;
+        context += `점수: ${msg.score}\n\n`;
+      });
+    }
+
+    // MarkAny 제품 정보 추가
+    context += this.getMarkAnyProductContext();
+
+    return context;
+  }
+
+  // MarkAny 제품 기본 정보
+  getMarkAnyProductContext() {
+    return `
+[MARKANY_PRODUCT_INFO]
+DRM: 디지털 권한 관리 솔루션, 문서 보안 및 암호화
+DLP: 데이터 유출 방지 솔루션, 실시간 정보 보호
+PrintSafer: 인쇄 보안 솔루션, 워터마크 및 추적
+ScreenSafer: 화면 캡처 방지 솔루션
+AI Sentinel: AI 기반 보안 솔루션
+
+조직: MCG(MarkAny Consulting Group), PS(Partner Success), MTG(MarkAny Technology Group), SIST(Security Information Systems Team), PIST(Product Innovation & Strategy Team)
+`;
+  }
+
+  // 민감 정보 필터링
+  filterSensitiveContent(content) {
+    // 개인정보, 기밀정보 패턴 제거
+    const sensitivePatterns = [
+      /\b\d{3}-\d{4}-\d{4}\b/g, // 전화번호
+      /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, // 이메일
+      /\b\d{6}-\d{7}\b/g, // 주민번호 패턴
+      /password|pwd|secret|token|credential/gi, // 민감 키워드
+      /급여|연봉|salary|pay/gi // 급여 관련
+    ];
+
+    let filtered = content;
+    sensitivePatterns.forEach(pattern => {
+      filtered = filtered.replace(pattern, '[보안상 비공개]');
+    });
+
+    return filtered;
+  }
+
+  // 캐시 관리
+  clearCache() {
+    this.slackCache.clear();
+    this.driveCache.clear();
+  }
+
+  // 실시간 인덱싱 (향후 구현)
+  async indexNewDocument(documentId, content) {
+    // TODO: 새 문서 벡터화 및 인덱싱
+    console.log(`Indexing new document: ${documentId}`);
+  }
+
+  // 사용 통계
+  getUsageStats() {
+    return {
+      totalQueries: this.slackCache.size + this.driveCache.size,
+      cacheHitRate: 0.85, // 예시
+      averageResponseTime: '250ms'
+    };
+  }
+}
+
+// 전역 RAG 인스턴스
+export const markanyRAG = new MarkAnyRAG();
+
+// Google Drive API 헬퍼 함수들 (향후 구현)
+export class GoogleDriveIntegration {
+  constructor(credentials) {
+    this.credentials = credentials;
+    // TODO: Google Drive API 초기화
+  }
+
+  async listFiles(query) {
+    // TODO: Google Drive 파일 목록 조회
+  }
+
+  async downloadFile(fileId) {
+    // TODO: 파일 다운로드 및 파싱
+  }
+
+  async parseDocument(fileBuffer, mimeType) {
+    // TODO: PDF/DOCX/PPTX/HWP 파싱
+  }
+}
+
+// Vector DB 헬퍼 (향후 Pinecone/Chroma 연동)
+export class VectorDatabase {
+  constructor(config) {
+    this.config = config;
+  }
+
+  async embed(text) {
+    // TODO: 텍스트 벡터화 (OpenAI Embeddings API 등)
+  }
+
+  async search(queryVector, topK = 5) {
+    // TODO: 벡터 유사도 검색
+  }
+
+  async upsert(vectors) {
+    // TODO: 벡터 저장/업데이트
+  }
+}
