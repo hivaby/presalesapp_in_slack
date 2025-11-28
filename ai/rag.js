@@ -1,97 +1,101 @@
 // MarkAny RAG (Retrieval-Augmented Generation) Module
 // Google Drive + Slack Workspace Knowledge Integration
 
+import { createGoogleDriveClient } from './google-drive-client.js';
+
 export class MarkAnyRAG {
-  constructor() {
+  constructor(googleServiceAccountJson = null, googleDriveFolderIds = null) {
     this.vectorDB = new Map(); // 간단한 메모리 저장소 (향후 Pinecone/Chroma 연동)
     this.slackCache = new Map();
     this.driveCache = new Map();
+    this.googleServiceAccountJson = googleServiceAccountJson;
+    this.googleDriveFolderIds = googleDriveFolderIds;
+    this.driveClient = null;
+  }
+
+  // Initialize Google Drive client
+  initDriveClient() {
+    if (!this.driveClient && this.googleServiceAccountJson && this.googleDriveFolderIds) {
+      this.driveClient = createGoogleDriveClient(
+        this.googleServiceAccountJson,
+        this.googleDriveFolderIds
+      );
+    }
   }
 
   // Google Drive 문서 검색
   async searchDriveDocuments(query, limit = 5) {
-    // TODO: Google Drive API 연동
-    // - PDF/HWP/PPTX/DOCX 파싱
-    // - Vector embedding 생성
-    // - 유사도 검색
+    // Initialize Drive client if not already done
+    this.initDriveClient();
 
-    // 임시 Mock 데이터 (실제 구현 시 Google Drive API 사용)
-    const mockDocuments = [
-      {
-        title: "MarkAny DRM 제품 가이드 v2.1",
-        url: "https://drive.google.com/file/d/1234567890abcdef/view",
-        snippet: "DRM 솔루션은 디지털 콘텐츠의 무단 복제와 배포를 방지하는 기술입니다. 문서 암호화, 권한 관리, 워터마크 등의 기능을 제공합니다.",
-        score: 0.95,
-        type: "drive_document",
-        lastModified: "2024-01-15",
-        author: "MarkAny 기술팀"
-      },
-      {
-        title: "DLP 솔루션 기술 명세서",
-        url: "https://drive.google.com/file/d/abcdef1234567890/view",
-        snippet: "데이터 유출 방지(DLP) 솔루션은 민감한 정보의 외부 유출을 실시간으로 탐지하고 차단합니다.",
-        score: 0.88,
-        type: "drive_document",
-        lastModified: "2024-01-10",
-        author: "MarkAny 개발팀"
-      },
-      {
-        title: "PrintSafer 설치 및 운영 가이드",
-        url: "https://drive.google.com/file/d/567890abcdef1234/view",
-        snippet: "PrintSafer는 인쇄 시 자동으로 워터마크를 삽입하여 문서의 출처를 추적할 수 있게 합니다.",
-        score: 0.82,
-        type: "drive_document",
-        lastModified: "2024-01-08",
-        author: "MarkAny PS팀"
-      }
-    ];
+    if (!this.driveClient) {
+      console.log('[RAG] Google Drive client not configured');
+      return [];
+    }
 
-    // 키워드 기반 필터링 (실제로는 벡터 유사도 검색)
-    const keywords = query.toLowerCase().split(' ');
-    const filtered = mockDocuments.filter(doc =>
-      keywords.some(keyword =>
-        doc.title.toLowerCase().includes(keyword) ||
-        doc.snippet.toLowerCase().includes(keyword)
-      )
-    ).slice(0, limit);
-
-    return filtered;
+    try {
+      const results = await this.driveClient.searchFiles(query, limit);
+      console.log(`[RAG] Found ${results.length} documents from Google Drive`);
+      return results;
+    } catch (error) {
+      console.error('[RAG] Google Drive search error:', error);
+      return [];
+    }
   }
 
   // Slack 메시지 검색 (conversations.history 기반)
   async searchSlackMessages(query, client, limit = 5) {
     try {
-      // Get list of public channels
-      const channelsResponse = await client.getChannels(50);
+      // Get list of public channels (reduced limit to avoid subrequest limit)
+      const channelsResponse = await client.getChannels(20);
       const channels = channelsResponse.channels || [];
 
       const keywords = query.toLowerCase().split(' ').filter(k => k.length > 1);
       const results = [];
 
-      // Search through recent messages in each channel
-      for (const channel of channels.slice(0, 20)) { // Limit to 20 channels for performance
+      // Search through recent messages in each channel (limit to 5 channels)
+      for (const channel of channels.slice(0, 5)) {
         try {
-          const historyResponse = await client.getHistory(channel.id, 100);
+          // Skip if bot is not a member
+          if (!channel.is_member) {
+            continue;
+          }
+
+          const historyResponse = await client.getHistory(channel.id, 50); // Reduced from 100
           const messages = historyResponse.messages || [];
 
-          // Filter messages by keywords
-          const matches = messages
-            .filter(msg => {
-              if (!msg.text || msg.subtype) return false; // Skip special messages
-              const text = msg.text.toLowerCase();
-              return keywords.some(kw => text.includes(kw));
-            })
-            .map(msg => ({
-              text: this.filterSensitiveContent(msg.text),
-              channel: channel.name,
-              ts: msg.ts,
-              score: this.calculateRelevanceScore(msg.text, keywords),
-              type: "slack_message"
-            }));
+          // Filter messages by keywords and fetch permalinks
+          const matches = await Promise.all(
+            messages
+              .filter(msg => {
+                if (!msg.text || msg.subtype) return false;
+                const text = msg.text.toLowerCase();
+                return keywords.some(kw => text.includes(kw));
+              })
+              .map(async msg => {
+                let permalink = null;
+                try {
+                  const permalinkResponse = await client.getPermalink(channel.id, msg.ts);
+                  permalink = permalinkResponse.permalink;
+                } catch (error) {
+                  console.error(`Error getting permalink for message ${msg.ts}:`, error);
+                }
+
+                return {
+                  text: this.filterSensitiveContent(msg.text),
+                  channel: channel.name,
+                  channelId: channel.id,
+                  ts: msg.ts,
+                  permalink: permalink,
+                  score: this.calculateRelevanceScore(msg.text, keywords),
+                  type: "slack_message"
+                };
+              })
+          );
 
           results.push(...matches);
 
-          if (results.length >= limit * 2) break; // Get extra for filtering
+          if (results.length >= limit * 2) break;
         } catch (error) {
           console.error(`Error searching channel ${channel.name}:`, error);
           continue;
@@ -301,8 +305,8 @@ AI Sentinel: AI 기반 보안 솔루션
   }
 }
 
-// 전역 RAG 인스턴스
-export const markanyRAG = new MarkAnyRAG();
+// Note: RAG instances should be created per-request with credentials
+// export const markanyRAG = new MarkAnyRAG();
 
 // Google Drive API 헬퍼 함수들 (향후 구현)
 export class GoogleDriveIntegration {

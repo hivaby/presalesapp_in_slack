@@ -1,4 +1,41 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+// Helper function to call Gemini API directly using fetch
+async function callGeminiAPI(prompt, apiKey, model = "gemini-2.5-flash") {
+  const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey
+    },
+    body: JSON.stringify({
+      contents: [{
+        parts: [{
+          text: prompt
+        }]
+      }],
+      generationConfig: {
+        temperature: 0.7,
+        topK: 40,
+        topP: 0.95,
+        maxOutputTokens: 2048,
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+    throw new Error('Invalid response from Gemini API');
+  }
+
+  return data.candidates[0].content.parts[0].text;
+}
 
 // MarkAny Slack AI Assistant 시스템 프롬프트
 export const MARKANY_SYSTEM_CONTENT = `
@@ -66,10 +103,8 @@ Message: "${prompt}"
 Return only the classification label.`;
 
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-    const result = await model.generateContent(classifier);
-    return result.response.text().trim();
+    const result = await callGeminiAPI(classifier, apiKey, "gemini-2.5-flash");
+    return result.trim();
   } catch (error) {
     console.error('Classification error:', error);
     return 'SAFE_QUERY'; // Fallback to safe query if classification fails
@@ -167,19 +202,7 @@ ${productPrompt}
 ${userPrompt}`;
 
   try {
-    const genAI = new GoogleGenerativeAI(geminiApiKey);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-pro",
-      generationConfig: {
-        temperature: 0.7,
-        topK: 40,
-        topP: 0.95,
-        maxOutputTokens: 2048,
-      }
-    });
-
-    const result = await model.generateContent(systemPrompt);
-    const response = result.response.text();
+    const response = await callGeminiAPI(systemPrompt, geminiApiKey, "gemini-2.5-flash");
 
     // 응답에서 민감정보 필터링
     return filterSensitiveResponse(response);
@@ -205,10 +228,15 @@ export function formatResponse(answer, sources = []) {
     }
 
     if (slackMessages.length > 0) {
-      formatted += '\n📎 **관련 Slack 메시지:**\n';
-      slackMessages.forEach(msg => {
-        formatted += `• [#${msg.channel}](${msg.permalink})\n`;
-      });
+      // Filter messages that have valid permalinks
+      const messagesWithLinks = slackMessages.filter(msg => msg.permalink);
+
+      if (messagesWithLinks.length > 0) {
+        formatted += '\n📎 **관련 Slack 메시지:**\n';
+        messagesWithLinks.forEach(msg => {
+          formatted += `• [#${msg.channel}](${msg.permalink})\n`;
+        });
+      }
     }
 
     formatted += '\n---\n💡 *MarkAny AI Assistant* | 추가 질문이 있으시면 언제든 말씀해주세요!';

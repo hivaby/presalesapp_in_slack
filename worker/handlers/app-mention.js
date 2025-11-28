@@ -6,7 +6,6 @@
 
 import { createSlackClient } from '../slack-client.js';
 import { runAI, formatResponse, detectProduct } from '../../ai/index.js';
-import { markanyRAG } from '../../ai/rag.js';
 
 export async function handleAppMention(event, env) {
     const { channel, text, user, ts } = event;
@@ -35,8 +34,15 @@ export async function handleAppMention(event, env) {
         // Detect product
         const detectedProduct = detectProduct(cleanText);
 
+        // Create RAG instance with Google Drive credentials
+        const { MarkAnyRAG } = await import('../../ai/rag.js');
+        const rag = new MarkAnyRAG(
+            env.GOOGLE_SERVICE_ACCOUNT_JSON,
+            env.GOOGLE_DRIVE_FOLDER_IDS
+        );
+
         // Perform RAG search
-        const ragResults = await markanyRAG.search(cleanText, slackClient);
+        const ragResults = await rag.search(cleanText, slackClient);
 
         // Get channel context (recent messages)
         let channelContext = '';

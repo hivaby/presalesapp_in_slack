@@ -6,7 +6,6 @@
 
 import { createSlackClient } from '../slack-client.js';
 import { runAI, formatResponse } from '../../ai/index.js';
-import { markanyRAG } from '../../ai/rag.js';
 
 export async function handleDirectMessage(event, env) {
     const { channel, text, user } = event;
@@ -55,8 +54,15 @@ export async function handleDirectMessage(event, env) {
         );
 
         try {
+            // Create RAG instance with Google Drive credentials
+            const { MarkAnyRAG } = await import('../../ai/rag.js');
+            const rag = new MarkAnyRAG(
+                env.GOOGLE_SERVICE_ACCOUNT_JSON,
+                env.GOOGLE_DRIVE_FOLDER_IDS
+            );
+
             // Perform RAG search
-            const ragResults = await markanyRAG.search(text, slackClient);
+            const ragResults = await rag.search(text, slackClient);
 
             // Generate AI response with Gemini API key from env
             const aiResponse = await runAI(text, ragResults.context, '', env.GEMINI_API_KEY);

@@ -73,6 +73,13 @@ export class SlackClient {
         });
     }
 
+    async getPermalink(channel, messageTs) {
+        return this.request('chat.getPermalink', {
+            channel,
+            message_ts: messageTs
+        });
+    }
+
     // Users methods
     async getUserInfo(user) {
         return this.request('users.info', {
