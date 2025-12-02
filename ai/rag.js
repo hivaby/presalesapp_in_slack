@@ -87,10 +87,18 @@ export class MarkAnyRAG {
 
   // Atlassian (Jira/Confluence) 검색
   async searchAtlassian(query, limit = 5) {
+    console.log('[RAG] searchAtlassian called with query:', query);
+
     this.initAtlassianClient();
 
     if (!this.atlassianClient) {
-      console.log('[RAG] Atlassian client not configured');
+      console.warn('[RAG] ⚠️ Atlassian client not configured - check ATLASSIAN_API_TOKEN, ATLASSIAN_EMAIL, ATLASSIAN_DOMAIN');
+      console.log('[RAG] Config status:', {
+        hasConfig: !!this.atlassianConfig,
+        hasDomain: this.atlassianConfig?.domain,
+        hasEmail: this.atlassianConfig?.email,
+        hasApiToken: this.atlassianConfig?.apiToken ? 'SET' : 'NOT SET'
+      });
       return { confluence: [], jira: [] };
     }
 
@@ -104,18 +112,33 @@ export class MarkAnyRAG {
 
       // Run Confluence and Jira searches in parallel
       const [confluenceResults, jiraResults] = await Promise.all([
-        this.atlassianClient.searchConfluence(cleanQuery, limit),
-        this.atlassianClient.searchJira(cleanQuery, limit)
+        this.atlassianClient.searchConfluence(cleanQuery, limit).catch(err => {
+          console.error('[RAG] ❌ Confluence search failed:', err.message);
+          return [];
+        }),
+        this.atlassianClient.searchJira(cleanQuery, limit).catch(err => {
+          console.error('[RAG] ❌ Jira search failed:', err.message);
+          return [];
+        })
       ]);
 
-      console.log(`[RAG] Found ${confluenceResults.length} Confluence pages and ${jiraResults.length} Jira issues`);
+      console.log(`[RAG] ✅ Found ${confluenceResults.length} Confluence pages and ${jiraResults.length} Jira issues`);
+
+      // Log sample results for debugging
+      if (confluenceResults.length > 0) {
+        console.log('[RAG] Sample Confluence result:', confluenceResults[0].title);
+      }
+      if (jiraResults.length > 0) {
+        console.log('[RAG] Sample Jira result:', jiraResults[0].title);
+      }
 
       return {
         confluence: confluenceResults,
         jira: jiraResults
       };
     } catch (error) {
-      console.error('[RAG] Atlassian search error:', error);
+      console.error('[RAG] ❌ Atlassian search error:', error);
+      console.error('[RAG] Error stack:', error.stack);
       return { confluence: [], jira: [] };
     }
   }

@@ -16,6 +16,8 @@ export class AtlassianClient {
      */
     async searchConfluence(query, limit = 5) {
         try {
+            console.log(`[Atlassian] Searching Confluence for: "${query}"`);
+
             // CQL (Confluence Query Language) search
             // Search in title and text body
             const cql = `siteSearch ~ "${query}" AND type = "page"`;
@@ -25,7 +27,10 @@ export class AtlassianClient {
                 expand: 'body.storage,version' // Get content body
             });
 
-            const response = await fetch(`${this.baseUrl}/wiki/rest/api/content/search?${params}`, {
+            const url = `${this.baseUrl}/wiki/rest/api/content/search?${params}`;
+            console.log(`[Atlassian] Confluence URL: ${url}`);
+
+            const response = await fetch(url, {
                 method: 'GET',
                 headers: {
                     'Authorization': this.authHeader,
@@ -34,11 +39,14 @@ export class AtlassianClient {
             });
 
             if (!response.ok) {
-                console.error(`Confluence search failed: ${response.status}`);
+                const errorText = await response.text();
+                console.error(`[Atlassian] ❌ Confluence search failed: ${response.status}`);
+                console.error(`[Atlassian] Error response:`, errorText);
                 return [];
             }
 
             const data = await response.json();
+            console.log(`[Atlassian] ✅ Confluence returned ${data.results?.length || 0} results`);
 
             return data.results.map(page => ({
                 id: page.id,
@@ -53,7 +61,8 @@ export class AtlassianClient {
             }));
 
         } catch (error) {
-            console.error('Confluence search error:', error);
+            console.error('[Atlassian] ❌ Confluence search error:', error.message);
+            console.error('[Atlassian] Error stack:', error.stack);
             return [];
         }
     }
@@ -63,11 +72,16 @@ export class AtlassianClient {
      */
     async searchJira(query, limit = 5) {
         try {
+            console.log(`[Atlassian] Searching Jira for: "${query}"`);
+
             // JQL (Jira Query Language) search
             // Search in summary and description
             const jql = `text ~ "${query}" ORDER BY created DESC`;
 
-            const response = await fetch(`${this.baseUrl}/rest/api/3/search`, {
+            const url = `${this.baseUrl}/rest/api/3/search`;
+            console.log(`[Atlassian] Jira URL: ${url}`);
+
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: {
                     'Authorization': this.authHeader,
@@ -82,11 +96,14 @@ export class AtlassianClient {
             });
 
             if (!response.ok) {
-                console.error(`Jira search failed: ${response.status}`);
+                const errorText = await response.text();
+                console.error(`[Atlassian] ❌ Jira search failed: ${response.status}`);
+                console.error(`[Atlassian] Error response:`, errorText);
                 return [];
             }
 
             const data = await response.json();
+            console.log(`[Atlassian] ✅ Jira returned ${data.issues?.length || 0} issues`);
 
             return data.issues.map(issue => ({
                 id: issue.id,
@@ -102,7 +119,8 @@ export class AtlassianClient {
             }));
 
         } catch (error) {
-            console.error('Jira search error:', error);
+            console.error('[Atlassian] ❌ Jira search error:', error.message);
+            console.error('[Atlassian] Error stack:', error.stack);
             return [];
         }
     }
