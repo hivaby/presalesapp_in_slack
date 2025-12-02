@@ -5,6 +5,7 @@ compatibility_date = "2024-11-01"
 [vars]
 ENVIRONMENT = "production"
 GOOGLE_DRIVE_FOLDER_IDS = "1LaczRN6zLInB5vGELKioEq8E6Sz1cqUM,1rxb75ig4N9SPAyvVkgn_e4TaR2sW8CQf"
+ATLASSIAN_DOMAIN = "markany.atlassian.net"
 
 # Secrets (설정 방법: wrangler secret put <SECRET_NAME>)
 # - SLACK_BOT_TOKEN: Slack Bot User OAuth Token

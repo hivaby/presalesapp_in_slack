@@ -50,7 +50,7 @@ export async function handleDirectMessage(event, env) {
         // Send "thinking" message
         const thinkingMsg = await slackClient.postMessage(
             channel,
-            '🤔 MarkAny 지식베이스를 검색하고 있습니다...'
+            '🔍 문서를 검색하고 내용을 분석하고 있습니다... 잠시만 기다려주세요.'
         );
 
         try {

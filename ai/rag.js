@@ -1,16 +1,23 @@
 // MarkAny RAG (Retrieval-Augmented Generation) Module
-// Google Drive + Slack Workspace Knowledge Integration
+// Google Drive + Slack Workspace + Atlassian Knowledge Integration
 
 import { createGoogleDriveClient } from './google-drive-client.js';
+import { createAtlassianClient } from './atlassian-client.js';
 
 export class MarkAnyRAG {
-  constructor(googleServiceAccountJson = null, googleDriveFolderIds = null) {
+  constructor(googleServiceAccountJson = null, googleDriveFolderIds = null, atlassianConfig = null) {
     this.vectorDB = new Map(); // 간단한 메모리 저장소 (향후 Pinecone/Chroma 연동)
     this.slackCache = new Map();
     this.driveCache = new Map();
+
+    // Google Drive Config
     this.googleServiceAccountJson = googleServiceAccountJson;
     this.googleDriveFolderIds = googleDriveFolderIds;
     this.driveClient = null;
+
+    // Atlassian Config
+    this.atlassianConfig = atlassianConfig; // { domain, email, apiToken }
+    this.atlassianClient = null;
   }
 
   // Initialize Google Drive client
@@ -19,6 +26,17 @@ export class MarkAnyRAG {
       this.driveClient = createGoogleDriveClient(
         this.googleServiceAccountJson,
         this.googleDriveFolderIds
+      );
+    }
+  }
+
+  // Initialize Atlassian client
+  initAtlassianClient() {
+    if (!this.atlassianClient && this.atlassianConfig && this.atlassianConfig.apiToken) {
+      this.atlassianClient = createAtlassianClient(
+        this.atlassianConfig.domain,
+        this.atlassianConfig.email,
+        this.atlassianConfig.apiToken
       );
     }
   }
@@ -34,12 +52,71 @@ export class MarkAnyRAG {
     }
 
     try {
-      const results = await this.driveClient.searchFiles(query, limit);
+      // 1. Improve search query: Remove common Korean particles
+      const cleanQuery = query
+        .replace(/(은|는|이|가|을|를|의|에|로|으로|하다|해줘|알려줘|작성해줘|설명해줘)\b/g, '')
+        .trim();
+
+      console.log(`[RAG] Original query: "${query}", Clean query: "${cleanQuery}"`);
+
+      // 2. Search files by name
+      const results = await this.driveClient.searchFiles(cleanQuery, limit);
       console.log(`[RAG] Found ${results.length} documents from Google Drive`);
+
+      // 3. Fetch content for top results (limit to top 3 to avoid timeout)
+      const topResults = results.slice(0, 3);
+      await Promise.all(topResults.map(async (doc) => {
+        try {
+          const content = await this.driveClient.getFileContent(doc.id, doc.mimeType);
+          if (content && content.length > 0) {
+            doc.content = content;
+            doc.snippet = content.slice(0, 200) + '...'; // Update snippet with actual content
+            console.log(`[RAG] Fetched content for ${doc.title} (${content.length} chars)`);
+          }
+        } catch (err) {
+          console.error(`[RAG] Failed to fetch content for ${doc.title}:`, err);
+        }
+      }));
+
       return results;
     } catch (error) {
       console.error('[RAG] Google Drive search error:', error);
       return [];
+    }
+  }
+
+  // Atlassian (Jira/Confluence) 검색
+  async searchAtlassian(query, limit = 5) {
+    this.initAtlassianClient();
+
+    if (!this.atlassianClient) {
+      console.log('[RAG] Atlassian client not configured');
+      return { confluence: [], jira: [] };
+    }
+
+    try {
+      // 1. Improve search query: Remove common Korean particles
+      const cleanQuery = query
+        .replace(/(은|는|이|가|을|를|의|에|로|으로|하다|해줘|알려줘|작성해줘|설명해줘)\b/g, '')
+        .trim();
+
+      console.log(`[RAG] Searching Atlassian with query: "${cleanQuery}"`);
+
+      // Run Confluence and Jira searches in parallel
+      const [confluenceResults, jiraResults] = await Promise.all([
+        this.atlassianClient.searchConfluence(cleanQuery, limit),
+        this.atlassianClient.searchJira(cleanQuery, limit)
+      ]);
+
+      console.log(`[RAG] Found ${confluenceResults.length} Confluence pages and ${jiraResults.length} Jira issues`);
+
+      return {
+        confluence: confluenceResults,
+        jira: jiraResults
+      };
+    } catch (error) {
+      console.error('[RAG] Atlassian search error:', error);
+      return { confluence: [], jira: [] };
     }
   }
 
@@ -170,6 +247,8 @@ export class MarkAnyRAG {
     const results = {
       documents: [],
       slackMessages: [],
+      confluence: [],
+      jira: [],
       context: ''
     };
 
@@ -190,8 +269,13 @@ export class MarkAnyRAG {
         }
       }
 
-      // 4. 컨텍스트 생성
-      results.context = this.buildContext(results.documents, results.slackMessages);
+      // 4. Atlassian (Jira/Confluence) 검색
+      const atlassianResults = await this.searchAtlassian(query);
+      results.confluence = atlassianResults.confluence;
+      results.jira = atlassianResults.jira;
+
+      // 5. 컨텍스트 생성
+      results.context = this.buildContext(results.documents, results.slackMessages, results.confluence, results.jira);
 
       return results;
     } catch (error) {
@@ -222,25 +306,47 @@ export class MarkAnyRAG {
   }
 
   // RAG 컨텍스트 구성
-  buildContext(documents, slackMessages) {
+  buildContext(documents, slackMessages, confluencePages = [], jiraIssues = []) {
     let context = '';
 
     if (documents.length > 0) {
-      context += '[MARKANY_DRIVE_DOCUMENTS]\n';
+      context += '관련 문서 (Google Drive):\n';
       documents.forEach(doc => {
-        context += `제목: ${doc.title}\n`;
-        context += `내용: ${doc.snippet}\n`;
-        context += `수정일: ${doc.lastModified}\n`;
-        context += `작성자: ${doc.author}\n\n`;
+        context += `- [${doc.type}] ${doc.title}\n`;
+        if (doc.content) {
+          context += `  내용: ${doc.content}\n`;
+        } else {
+          context += `  요약: ${doc.snippet}\n`;
+        }
+        context += `  (출처: ${doc.url})\n\n`;
+      });
+    }
+
+    if (confluencePages.length > 0) {
+      context += '관련 문서 (Confluence):\n';
+      confluencePages.forEach(page => {
+        context += `- [Confluence] ${page.title}\n`;
+        context += `  내용: ${page.content}\n`;
+        context += `  (링크: ${page.url})\n\n`;
+      });
+    }
+
+    if (jiraIssues.length > 0) {
+      context += '관련 이슈 (Jira):\n';
+      jiraIssues.forEach(issue => {
+        context += `- [${issue.status}] ${issue.title}\n`;
+        context += `  내용: ${issue.content}\n`;
+        context += `  (링크: ${issue.url})\n\n`;
       });
     }
 
     if (slackMessages.length > 0) {
-      context += '[MARKANY_SLACK_KNOWLEDGE]\n';
+      context += '관련 Slack 대화:\n';
       slackMessages.forEach(msg => {
-        context += `채널: #${msg.channel}\n`;
-        context += `내용: ${msg.text.substring(0, 200)}...\n`;
-        context += `점수: ${msg.score}\n\n`;
+        context += `- [${msg.channel}] ${msg.text}\n`;
+        if (msg.permalink) {
+          context += `  (링크: ${msg.permalink})\n`;
+        }
       });
     }
 

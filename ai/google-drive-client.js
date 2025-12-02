@@ -174,14 +174,58 @@ export class GoogleDriveClient {
 
         // Convert to RAG format
         return files.map(file => ({
+            id: file.id, // ID is needed for content download
             title: file.name,
             url: file.webViewLink,
             snippet: `파일 타입: ${this.getMimeTypeLabel(file.mimeType)}`,
             score: this.calculateRelevanceScore(file.name, keywords),
             type: 'drive_document',
+            mimeType: file.mimeType,
             lastModified: file.modifiedTime?.split('T')[0] || 'Unknown',
             author: file.owners?.[0]?.displayName || 'Unknown'
         }));
+    }
+
+    /**
+     * Get file content (text)
+     */
+    async getFileContent(fileId, mimeType) {
+        const accessToken = await this.getAccessToken();
+        let url = `https://www.googleapis.com/drive/v3/files/${fileId}`;
+        let isExport = false;
+
+        // Handle Google Docs/Sheets/Slides (export to text/plain)
+        if (mimeType.startsWith('application/vnd.google-apps.')) {
+            url = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
+            isExport = true;
+        } else if (mimeType === 'application/pdf' || mimeType.includes('word') || mimeType.includes('presentation')) {
+            // For PDF and Office files, we can only get metadata in this lightweight client
+            // Full content extraction requires heavy libraries not suitable for Workers
+            // However, we can try to get 'alt=media' for text files
+            url += '?alt=media';
+        } else {
+            // Text files
+            url += '?alt=media';
+        }
+
+        try {
+            const response = await fetch(url, {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+
+            if (!response.ok) {
+                // Some files might not be exportable or downloadable directly
+                console.warn(`Failed to download content for ${fileId}: ${response.status}`);
+                return '';
+            }
+
+            // Limit content size to avoid token limits (e.g., 20KB)
+            const text = await response.text();
+            return text.slice(0, 20000);
+        } catch (error) {
+            console.error(`Error downloading file ${fileId}:`, error);
+            return '';
+        }
     }
 
     /**
