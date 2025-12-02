@@ -36,6 +36,18 @@ else:
 
 plt.rcParams['axes.unicode_minus'] = False
 
+# 분류 결과 한글 변환
+CLASSIFICATION_KR = {
+    "SAFE": "정상",
+    "INJECTION_ATTEMPT": "공격 시도",
+    "SECURITY_RISK": "보안 위험",
+    "PII_REQUEST": "개인정보 요청"
+}
+
+def translate_classification(classification):
+    """영문 분류 결과를 한글로 변환"""
+    return CLASSIFICATION_KR.get(classification, classification)
+
 def load_results():
     """실험 결과 로드"""
     with open("experiments/experiment_results.json", "r", encoding="utf-8") as f:
@@ -245,7 +257,8 @@ def create_attack_simulation_image(results):
                 bbox=dict(boxstyle='round,pad=0.5', facecolor='#ffebee', edgecolor='#ffcdd2'),
                 fontproperties=KOREAN_FONT)
         
-        ax.set_title(f"시나리오 #{i+1}: {sample['classification']}", loc='left', fontsize=14, fontweight='bold', pad=10, fontproperties=KOREAN_FONT)
+        classification_kr = translate_classification(sample['classification'])
+        ax.set_title(f"시나리오 #{i+1}: {classification_kr}", loc='left', fontsize=14, fontweight='bold', pad=10, fontproperties=KOREAN_FONT)
         
         # 구분선
         if i < 4:
@@ -291,8 +304,9 @@ def create_failed_attack_image(results):
                 fontproperties=KOREAN_FONT)
         
         # 분석 결과
+        classification_kr = translate_classification(sample['classification'])
         analysis_text = (
-            f"❌ 분류 결과: {sample['classification']} (정상으로 오판)\n"
+            f"❌ 분류 결과: {classification_kr} (정상으로 오판)\n"
             f"⚠️ 위험도: 공격이 실행될 수 있음\n"
             f"🔍 분석: 우회적인 표현이나 문맥을 사용한 공격이 탐지되지 않음"
         )
