@@ -233,14 +233,48 @@ def create_detailed_sample_table(results):
     plt.close()
 
 def create_attack_simulation_image(results):
-    """실제 공격 시뮬레이션 결과 이미지 생성 (5개 샘플)"""
-    # 차단된 공격 샘플 5개 선택
-    blocked_attacks = [r for r in results if r['type'] == 'ATTACK' and r['correct']][:5]
+    """실제 공격 시뮬레이션 결과 이미지 생성 (10가지 공격 유형별 1개씩)"""
+    # 차단된 공격 샘플에서 10가지 유형별로 1개씩 선택
+    blocked_attacks = [r for r in results if r['type'] == 'ATTACK' and r['correct']]
     
-    fig, axes = plt.subplots(5, 1, figsize=(12, 15))
-    fig.suptitle('실제 공격 방어 시뮬레이션 (Top 5)', fontsize=20, fontweight='bold', fontproperties=KOREAN_FONT)
+    # 10가지 공격 유형별로 샘플 선택 (ID 기준으로 각 유형의 첫 번째 샘플)
+    # 1-5: 역할 가장, 6-10: 시스템 프롬프트 유출, 11-13: Base64, 14-15: 유니코드, 
+    # 16-18: 구분자, 19-21: 우회적 질문, 22-24: 긴급/권한, 25-27: 논리적 모순, 
+    # 28-30: 툴 오남용, 31-34: PII 요청
+    attack_type_samples = []
+    attack_types = [
+        (1, 5, "역할 가장 (Role Playing)"),
+        (6, 10, "시스템 프롬프트 유출"),
+        (11, 13, "Base64 난독화"),
+        (14, 15, "유니코드 교란"),
+        (16, 18, "구분자 삽입"),
+        (19, 21, "우회적인 질문"),
+        (22, 24, "긴급/권한 사칭"),
+        (25, 27, "논리적 모순 유도"),
+        (28, 30, "툴 오남용"),
+        (31, 34, "PII 요청")
+    ]
     
-    for i, (ax, sample) in enumerate(zip(axes, blocked_attacks)):
+    for start_id, end_id, type_name in attack_types:
+        # 해당 범위의 ID를 가진 차단된 샘플 찾기
+        sample = next((s for s in blocked_attacks if start_id <= s['id'] <= end_id), None)
+        if sample:
+            attack_type_samples.append((sample, type_name))
+    
+    # 10개 샘플이 없으면 나머지는 순서대로 채움
+    if len(attack_type_samples) < 10:
+        remaining = [s for s in blocked_attacks if s not in [x[0] for x in attack_type_samples]]
+        for sample in remaining[:10 - len(attack_type_samples)]:
+            attack_type_samples.append((sample, "기타 공격"))
+    
+    num_samples = min(len(attack_type_samples), 10)
+    fig, axes = plt.subplots(num_samples, 1, figsize=(14, 3.5 * num_samples))
+    if num_samples == 1:
+        axes = [axes]
+    
+    fig.suptitle('실제 공격 방어 시뮬레이션 (10가지 공격 유형)', fontsize=20, fontweight='bold', fontproperties=KOREAN_FONT)
+    
+    for i, (ax, (sample, type_name)) in enumerate(zip(axes, attack_type_samples)):
         ax.axis('off')
         
         # 채팅 UI 스타일 박스
@@ -248,20 +282,20 @@ def create_attack_simulation_image(results):
         response_text = "AI System: 🚫 [보안 경고] 프롬프트 인젝션 공격이 감지되어 차단되었습니다.\n(Reason: INJECTION_ATTEMPT detected)"
         
         # 사용자 질문 박스
-        ax.text(0.05, 0.7, prompt_text, fontsize=12, verticalalignment='top',
+        ax.text(0.05, 0.7, prompt_text, fontsize=11, verticalalignment='top',
                 bbox=dict(boxstyle='round,pad=0.5', facecolor='#f0f2f5', edgecolor='#dbdbdb'),
-                fontproperties=KOREAN_FONT)
+                fontproperties=KOREAN_FONT, wrap=True)
         
         # AI 응답 박스 (경고)
-        ax.text(0.05, 0.3, response_text, fontsize=12, verticalalignment='top', color='#d32f2f', fontweight='bold',
+        ax.text(0.05, 0.3, response_text, fontsize=11, verticalalignment='top', color='#d32f2f', fontweight='bold',
                 bbox=dict(boxstyle='round,pad=0.5', facecolor='#ffebee', edgecolor='#ffcdd2'),
                 fontproperties=KOREAN_FONT)
         
         classification_kr = translate_classification(sample['classification'])
-        ax.set_title(f"시나리오 #{i+1}: {classification_kr}", loc='left', fontsize=14, fontweight='bold', pad=10, fontproperties=KOREAN_FONT)
+        ax.set_title(f"#{i+1}. {type_name} - 결과: {classification_kr}", loc='left', fontsize=13, fontweight='bold', pad=10, fontproperties=KOREAN_FONT)
         
-        # 구분선
-        if i < 4:
+        # 구분선 (마지막 제외)
+        if i < num_samples - 1:
             ax.axhline(y=0, color='gray', linestyle='--', linewidth=0.5)
 
     plt.tight_layout()
@@ -270,9 +304,9 @@ def create_attack_simulation_image(results):
     plt.close()
 
 def create_failed_attack_image(results):
-    """차단 실패한 공격 사례(False Negatives) 시각화"""
-    # 차단 실패한(미탐지) 공격 샘플 추출
-    failed_attacks = [r for r in results if r['type'] == 'ATTACK' and not r['correct']]
+    """차단 실패한 공격 사례(False Negatives) 시각화 (최대 10개)"""
+    # 차단 실패한(미탐지) 공격 샘플 추출 (최대 10개)
+    failed_attacks = [r for r in results if r['type'] == 'ATTACK' and not r['correct']][:10]
     
     if not failed_attacks:
         print("ℹ️ 차단 실패한 공격 사례가 없습니다. (탐지율 100%)")
@@ -280,7 +314,7 @@ def create_failed_attack_image(results):
 
     # 이미지 크기 동적 조절 (샘플 수에 따라)
     num_samples = len(failed_attacks)
-    fig, axes = plt.subplots(num_samples, 1, figsize=(12, 3 * num_samples))
+    fig, axes = plt.subplots(num_samples, 1, figsize=(14, 3.5 * num_samples))
     if num_samples == 1:
         axes = [axes]
     
@@ -295,11 +329,11 @@ def create_failed_attack_image(results):
         ax.add_patch(rect)
         
         # 헤더
-        ax.text(0.02, 0.9, f"Case #{i+1} (ID: {sample['id']})", fontsize=14, fontweight='bold', color='#e65100', fontproperties=KOREAN_FONT)
+        ax.text(0.02, 0.9, f"Case #{i+1} (ID: {sample['id']})", fontsize=13, fontweight='bold', color='#e65100', fontproperties=KOREAN_FONT)
         
         # 프롬프트 내용
         prompt_text = f"User Prompt:\n{sample['prompt']}"
-        ax.text(0.05, 0.75, prompt_text, fontsize=12, verticalalignment='top',
+        ax.text(0.05, 0.75, prompt_text, fontsize=11, verticalalignment='top',
                 bbox=dict(boxstyle='round,pad=0.5', facecolor='white', edgecolor='#dbdbdb'),
                 fontproperties=KOREAN_FONT)
         
@@ -310,7 +344,7 @@ def create_failed_attack_image(results):
             f"⚠️ 위험도: 공격이 실행될 수 있음\n"
             f"🔍 분석: 우회적인 표현이나 문맥을 사용한 공격이 탐지되지 않음"
         )
-        ax.text(0.05, 0.35, analysis_text, fontsize=12, verticalalignment='top', color='#bf360c',
+        ax.text(0.05, 0.35, analysis_text, fontsize=11, verticalalignment='top', color='#bf360c',
                 bbox=dict(boxstyle='round,pad=0.5', facecolor='#ffe0b2', edgecolor='#ffb74d'),
                 fontproperties=KOREAN_FONT)
         
