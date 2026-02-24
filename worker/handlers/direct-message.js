@@ -5,13 +5,18 @@
  */
 
 import { createSlackClient } from '../slack-client.js';
-import { runAI, formatResponse } from '../../ai/index.js';
+import { runMultiHopAI, formatResponse, detectProduct } from '../../ai/index.js';
+import { setWorkersAI } from '../../ai/index.js';
+import { createAnalytics } from '../analytics.js';
 
 export async function handleDirectMessage(event, env) {
     const { channel, text, user } = event;
 
-    // Ignore empty messages
-    if (!text || text.trim() === '') {
+    // Inject Workers AI binding
+    if (env.AI) setWorkersAI(env.AI);
+
+    // Ignore empty messages or too long
+    if (!text || text.trim() === '' || text.length > 10000) {
         return;
     }
 
@@ -20,6 +25,37 @@ export async function handleDirectMessage(event, env) {
     const slackClient = createSlackClient(env.SLACK_BOT_TOKEN);
 
     try {
+        // Handle feedback messages
+        if (text.startsWith('피드백:') || text.startsWith('피드백 :') || text.toLowerCase().startsWith('feedback:')) {
+            const feedbackText = text.replace(/^(피드백\s*:|feedback\s*:)\s*/i, '').trim();
+            if (feedbackText.length > 0) {
+                // Save feedback to D1
+                try {
+                    const analytics = createAnalytics(env);
+                    if (env.DB) {
+                        await env.DB.prepare(
+                            `INSERT INTO user_feedback (user_id, feedback_text, timestamp) VALUES (?, ?, ?)`
+                        ).bind(user, feedbackText, Date.now()).run().catch(() => {
+                            // Table might not exist yet, create it
+                            return env.DB.prepare(
+                                `CREATE TABLE IF NOT EXISTS user_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, feedback_text TEXT, timestamp INTEGER)`
+                            ).run().then(() =>
+                                env.DB.prepare(
+                                    `INSERT INTO user_feedback (user_id, feedback_text, timestamp) VALUES (?, ?, ?)`
+                                ).bind(user, feedbackText, Date.now()).run()
+                            );
+                        });
+                    }
+                } catch (dbErr) {
+                    console.error('[DM Handler] Feedback DB error:', dbErr.message);
+                }
+                await slackClient.postMessage(channel, '✅ 소중한 피드백 감사합니다! 서비스 개선에 반영하겠습니다. 🙏');
+            } else {
+                await slackClient.postMessage(channel, '📮 피드백 내용을 함께 적어주세요.\n예시: `피드백: DLP 메신저 제어 관련 답변이 부정확합니다`');
+            }
+            return;
+        }
+
         // Handle help command
         if (text.toLowerCase().includes('help') || text === '도움말') {
             const helpMessage = `🤖 **MarkAny AI Assistant에 오신 것을 환영합니다!**
@@ -37,6 +73,7 @@ export async function handleDirectMessage(event, env) {
 • "DRM 라이선스 설정 방법은?"
 • "PrintSafer 워터마크 적용하는 법"
 • "DLP 정책 설정 가이드"
+• "DRM이 지원하는 CAD 종류는?"
 
 🛡️ **보안 정책:**
 개인정보나 기밀정보는 처리하지 않으며, 모든 답변에는 출처를 제공합니다.
@@ -53,31 +90,84 @@ export async function handleDirectMessage(event, env) {
             '🔍 문서를 검색하고 내용을 분석하고 있습니다... 잠시만 기다려주세요.'
         );
 
+        const analytics = createAnalytics(env);
+        const startTime = Date.now();
+
         try {
             // Create RAG instance with Google Drive credentials
             const { MarkAnyRAG } = await import('../../ai/rag.js');
             const rag = new MarkAnyRAG(
-                env.GOOGLE_SERVICE_ACCOUNT_JSON,
-                env.GOOGLE_DRIVE_FOLDER_IDS
+                env.GOOGLE_SERVICE_ACCOUNT_JSON || null,
+                env.GOOGLE_DRIVE_FOLDER_IDS || null,
+                {
+                    domain: env.ATLASSIAN_DOMAIN || null,
+                    email: env.ATLASSIAN_EMAIL || null,
+                    apiToken: env.ATLASSIAN_API_TOKEN || null
+                }
             );
 
-            // Perform RAG search
-            const ragResults = await rag.search(text, slackClient);
+            // RAG 검색 함수 래퍼 (multi-hop에서 hop별로 호출됨)
+            const ragSearchFn = (query) => rag.search(query, slackClient);
 
-            // Generate AI response with Gemini API key from env
-            const aiResponse = await runAI(text, ragResults.context, '', env.GEMINI_API_KEY);
+            // 대화 히스토리 가져오기
+            let conversationHistory = '';
+            try {
+                const dmHistory = await slackClient.getHistory(channel, 6);
+                if (dmHistory.messages) {
+                    conversationHistory = dmHistory.messages
+                        .reverse()
+                        .filter(m => m.text && m.text !== text)
+                        .slice(0, 4)
+                        .map(m => {
+                            const role = m.bot_id ? 'MarkAny Assistant' : 'User';
+                            return `${role}: ${m.text.substring(0, 150)}`;
+                        })
+                        .join('\n');
+                }
+            } catch (error) {
+                console.warn('[DM Handler] Could not fetch DM history:', error.message);
+            }
+
+            // Multi-Hop AI 호출 (복합 질문 자동 감지 및 분해)
+            const result = await runMultiHopAI(text, ragSearchFn, conversationHistory, env.GEMINI_API_KEY);
 
             // Format response with sources
-            const sources = [...ragResults.documents, ...ragResults.slackMessages];
-            const formattedResponse = formatResponse(aiResponse, sources);
+            let formattedResponse = formatResponse(result.answer, result.sources);
+
+            if (result.isMultiHop && result.hops?.length > 0) {
+                formattedResponse += `\n\n🔗 *${result.hops.length}단계 분석을 통해 답변을 생성했습니다.*`;
+            }
 
             // Update thinking message with actual response
             await slackClient.updateMessage(channel, thinkingMsg.ts, formattedResponse);
+
+            // Log successful query with full answer
+            const responseTime = Date.now() - startTime;
+            await analytics.logQuery({
+                userId: user,
+                userName: 'User',
+                question: text,
+                answer: result.answer,
+                responseTime,
+                ragSources: result.sources,
+                success: true
+            });
 
             console.log(`[DM Handler] Responded to user ${user}`);
 
         } catch (aiError) {
             console.error('[DM Handler] AI processing error:', aiError);
+
+            // Log failed query
+            const responseTime = Date.now() - startTime;
+            await analytics.logQuery({
+                userId: user,
+                question: text,
+                responseTime,
+                ragSources: [],
+                success: false,
+                errorType: aiError.message
+            });
 
             // Update with error message
             await slackClient.updateMessage(

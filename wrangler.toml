@@ -1,18 +1,32 @@
 name = "markany-slack-assistant"
 main = "worker/index.js"
-compatibility_date = "2024-11-01"
+compatibility_date = "2024-11-20"
+compatibility_flags = ["nodejs_compat"]
 
+# Workers AI binding
+[ai]
+binding = "AI"
+
+# Environment variables (use wrangler secret for sensitive values)
 [vars]
 ENVIRONMENT = "production"
-GOOGLE_DRIVE_FOLDER_IDS = "1LaczRN6zLInB5vGELKioEq8E6Sz1cqUM,1rxb75ig4N9SPAyvVkgn_e4TaR2sW8CQf"
-ATLASSIAN_DOMAIN = "markany.atlassian.net"
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "presalesapp-analytics"
+database_id = "36191cd4-daaa-46fd-a733-a9ad0cbc98b8"
+
+# Analytics Engine binding (disabled - needs to be enabled in dashboard)
+# [[analytics_engine_datasets]]
+# binding = "ANALYTICS"
 
 # Secrets (설정 방법: wrangler secret put <SECRET_NAME>)
 # - SLACK_BOT_TOKEN: Slack Bot User OAuth Token
 # - SLACK_SIGNING_SECRET: Slack App Signing Secret
 # - GEMINI_API_KEY: Google Gemini API Key
 
-# Optional: Cloudflare KV for caching (향후 사용)
+# Optional: KV namespace for caching (if needed later)
 # [[kv_namespaces]]
 # binding = "CACHE"
 # id = "your-kv-namespace-id"

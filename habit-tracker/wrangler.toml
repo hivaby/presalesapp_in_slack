@@ -1,0 +1,11 @@
+name = "daily-habit-tracker"
+main = "src/worker.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+ENVIRONMENT = "production"
+
+[[kv_namespaces]]
+binding = "HABITS_KV"
+id = "your-kv-namespace-id"
+preview_id = "your-preview-kv-namespace-id"

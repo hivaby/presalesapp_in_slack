@@ -145,20 +145,32 @@ export class GoogleDriveClient {
     }
 
     /**
-     * Search files in a specific folder (recursive)
+     * Search files in a specific folder (supports Shared Drives)
      */
     async searchInFolder(folderId, query, accessToken) {
         const keywords = query.toLowerCase().split(' ').filter(k => k.length > 1);
+        if (keywords.length === 0) return [];
 
-        // Build search query for Google Drive API
-        const q = `'${folderId}' in parents and trashed=false and (${keywords.map(kw => `name contains '${kw}'`).join(' or ')
-            })`;
+        // Build search query — use fullText for better results
+        const nameConditions = keywords.map(kw => `name contains '${kw}'`).join(' or ');
+        // For Shared Drives (IDs starting with 0A), search the entire drive recursively
+        const isSharedDrive = folderId.startsWith('0A');
+        const q = isSharedDrive
+            ? `trashed=false and (${nameConditions})`
+            : `'${folderId}' in parents and trashed=false and (${nameConditions})`;
 
         const url = new URL('https://www.googleapis.com/drive/v3/files');
         url.searchParams.set('q', q);
         url.searchParams.set('fields', 'files(id,name,mimeType,modifiedTime,webViewLink,owners)');
         url.searchParams.set('pageSize', '20');
         url.searchParams.set('orderBy', 'modifiedTime desc');
+        // Shared Drive support
+        url.searchParams.set('includeItemsFromAllDrives', 'true');
+        url.searchParams.set('supportsAllDrives', 'true');
+        if (isSharedDrive) {
+            url.searchParams.set('driveId', folderId);
+            url.searchParams.set('corpora', 'drive');
+        }
 
         const response = await fetch(url.toString(), {
             headers: { 'Authorization': `Bearer ${accessToken}` }

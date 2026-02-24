@@ -78,21 +78,22 @@ export class AtlassianClient {
             // Search in summary and description
             const jql = `text ~ "${query}" ORDER BY created DESC`;
 
-            const url = `${this.baseUrl}/rest/api/3/search`;
+            const url = `${this.baseUrl}/rest/api/3/search/jql`;
             console.log(`[Atlassian] Jira URL: ${url}`);
 
-            const response = await fetch(url, {
-                method: 'POST',
+            // New API uses GET with query params
+            const params = new URLSearchParams({
+                jql: jql,
+                maxResults: limit,
+                fields: 'summary,description,created,updated,assignee,status'
+            });
+
+            const response = await fetch(`${url}?${params}`, {
+                method: 'GET',
                 headers: {
                     'Authorization': this.authHeader,
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    jql: jql,
-                    maxResults: limit,
-                    fields: ['summary', 'description', 'created', 'updated', 'assignee', 'status']
-                })
+                    'Accept': 'application/json'
+                }
             });
 
             if (!response.ok) {

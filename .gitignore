@@ -3,3 +3,6 @@
 .env*
 !.env.sample
 google-service-account.json
+.wrangler/
+bot.log
+.bash_profil

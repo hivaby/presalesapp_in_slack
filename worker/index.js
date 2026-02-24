@@ -6,10 +6,36 @@
 
 import { verifySlackRequest } from './slack-verify.js';
 import { handleEvent } from './event-router.js';
+import { handleAnalyticsRequest } from './api/analytics.js';
+import { handleLogsRequest } from './api/logs.js';
+import { handleDashboardRequest } from './dashboard-handler.js';
 
 export default {
     async fetch(request, env, ctx) {
-        // Only accept POST requests
+        const url = new URL(request.url);
+
+        // Analytics API
+        if (url.pathname === '/api/analytics') {
+            return handleAnalyticsRequest(request, env);
+        }
+
+        // Logs API
+        if (url.pathname === '/api/logs') {
+            return handleLogsRequest(request, env);
+        }
+
+
+        // Logs API
+        if (url.pathname === '/api/logs') {
+            return handleLogsRequest(request, env);
+        }
+
+        // Dashboard
+        if (url.pathname.startsWith('/dashboard')) {
+            return handleDashboardRequest(request);
+        }
+
+        // Only accept POST requests for Slack events
         if (request.method !== 'POST') {
             return new Response('Method not allowed', { status: 405 });
         }

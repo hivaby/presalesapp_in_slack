@@ -1,4 +1,4 @@
-import { runAI, formatResponse, getProductSpecificPrompt } from '../../ai/index.js';
+import { runAI, runMultiHopAI, formatResponse, getProductSpecificPrompt } from '../../ai/index.js';
 import { markanyRAG } from '../../ai/rag.js';
 
 /**
@@ -60,15 +60,17 @@ export const directMessageCallback = async ({ event, client, logger, say }) => {
     });
 
     try {
-      // RAG 검색 수행
-      const ragResults = await markanyRAG.search(text, client);
+      // RAG 검색 함수 래퍼 (multi-hop에서 hop별로 호출됨)
+      const ragSearchFn = (query) => markanyRAG.search(query, client);
       
-      // AI 응답 생성
-      const aiResponse = await runAI(text, ragResults.context);
+      // Multi-Hop AI 응답 생성
+      const result = await runMultiHopAI(text, ragSearchFn);
       
       // 출처 정보 포함하여 포맷팅
-      const sources = [...ragResults.documents, ...ragResults.slackMessages];
-      const formattedResponse = formatResponse(aiResponse, sources);
+      let formattedResponse = formatResponse(result.answer, result.sources);
+      if (result.isMultiHop && result.hops?.length > 0) {
+        formattedResponse += `\n\n🔗 *${result.hops.length}단계 분석을 통해 답변을 생성했습니다.*`;
+      }
 
       // thinking 메시지 업데이트
       await client.chat.update({

@@ -3,6 +3,7 @@
 
 import { createGoogleDriveClient } from './google-drive-client.js';
 import { createAtlassianClient } from './atlassian-client.js';
+import { productKnowledgeBank } from './product-knowledge-bank.js';
 
 export class MarkAnyRAG {
   constructor(googleServiceAccountJson = null, googleDriveFolderIds = null, atlassianConfig = null) {
@@ -146,65 +147,49 @@ export class MarkAnyRAG {
   // Slack 메시지 검색 (conversations.history 기반)
   async searchSlackMessages(query, client, limit = 5) {
     try {
-      // Get list of public channels (reduced limit to avoid subrequest limit)
       const channelsResponse = await client.getChannels(20);
-      const channels = channelsResponse.channels || [];
+      const channels = (channelsResponse.channels || [])
+        .filter(ch => ch.is_member)
+        .slice(0, 5);
 
       const keywords = query.toLowerCase().split(' ').filter(k => k.length > 1);
-      const results = [];
 
-      // Search through recent messages in each channel (limit to 5 channels)
-      for (const channel of channels.slice(0, 5)) {
-        try {
-          // Skip if bot is not a member
-          if (!channel.is_member) {
-            continue;
-          }
+      // 채널별 검색을 병렬 실행
+      const channelResults = await Promise.allSettled(
+        channels.map(async (channel) => {
+          try {
+            const historyResponse = await client.getHistory(channel.id, 50);
+            const messages = historyResponse.messages || [];
 
-          const historyResponse = await client.getHistory(channel.id, 50); // Reduced from 100
-          const messages = historyResponse.messages || [];
-
-          // Filter messages by keywords and fetch permalinks
-          const matches = await Promise.all(
-            messages
+            return messages
               .filter(msg => {
                 if (!msg.text || msg.subtype) return false;
                 const text = msg.text.toLowerCase();
                 return keywords.some(kw => text.includes(kw));
               })
-              .map(async msg => {
-                let permalink = null;
-                try {
-                  const permalinkResponse = await client.getPermalink(channel.id, msg.ts);
-                  permalink = permalinkResponse.permalink;
-                } catch (error) {
-                  console.error(`Error getting permalink for message ${msg.ts}:`, error);
-                }
+              .map(msg => ({
+                text: this.filterSensitiveContent(msg.text),
+                channel: channel.name,
+                channelId: channel.id,
+                ts: msg.ts,
+                permalink: null,
+                score: this.calculateRelevanceScore(msg.text, keywords),
+                type: "slack_message"
+              }));
+          } catch (error) {
+            console.error(`Error searching channel ${channel.name}:`, error.message);
+            return [];
+          }
+        })
+      );
 
-                return {
-                  text: this.filterSensitiveContent(msg.text),
-                  channel: channel.name,
-                  channelId: channel.id,
-                  ts: msg.ts,
-                  permalink: permalink,
-                  score: this.calculateRelevanceScore(msg.text, keywords),
-                  type: "slack_message"
-                };
-              })
-          );
+      const allResults = channelResults
+        .filter(r => r.status === 'fulfilled')
+        .flatMap(r => r.value);
 
-          results.push(...matches);
-
-          if (results.length >= limit * 2) break;
-        } catch (error) {
-          console.error(`Error searching channel ${channel.name}:`, error);
-          continue;
-        }
-      }
-
-      // Filter sensitive channels and sort by score
+      // 민감 채널 필터링 + 정렬 + 상위 결과만 선택
       const sensitiveChannels = ['hr', 'finance', 'salary', 'personal'];
-      const filtered = results
+      const topResults = allResults
         .filter(msg =>
           !sensitiveChannels.some(sensitive =>
             msg.channel?.toLowerCase().includes(sensitive)
@@ -213,9 +198,19 @@ export class MarkAnyRAG {
         .sort((a, b) => b.score - a.score)
         .slice(0, limit);
 
-      return filtered;
+      // 상위 결과만 permalink 병렬 조회 (API 호출 최소화)
+      await Promise.allSettled(
+        topResults.map(async (msg) => {
+          try {
+            const permalinkResponse = await client.getPermalink(msg.channelId, msg.ts);
+            msg.permalink = permalinkResponse.permalink;
+          } catch { /* permalink 실패는 무시 */ }
+        })
+      );
+
+      return topResults;
     } catch (error) {
-      console.error('Slack search error:', error);
+      console.error('Slack search error:', error.message);
       return [];
     }
   }
@@ -272,37 +267,60 @@ export class MarkAnyRAG {
       slackMessages: [],
       confluence: [],
       jira: [],
+      productInfo: [],
       context: ''
     };
 
     try {
-      // 1. Google Drive 검색
-      results.documents = await this.searchDriveDocuments(query);
+      // 0. 제품 지식뱅크 검색 (항상 먼저 실행 - 가장 빠름, ~0.2ms)
+      // 서비스 계정: 파일 경로 우선, 환경변수 fallback
+      const saCredential = this.googleServiceAccountJson || 'google-service-account.json';
+      try {
+        await productKnowledgeBank.load(saCredential);
+      } catch (kbLoadErr) {
+        console.warn('[RAG] KB load failed, trying fallback:', kbLoadErr.message);
+        await productKnowledgeBank.load(null); // fallback 데이터 강제 로드
+      }
+      const kbResults = productKnowledgeBank.search(query);
+      results.productInfo = kbResults.products;
+      console.log(`[RAG] KB search: ${kbResults.products.length} products, context: ${kbResults.context.length} chars`);
 
-      // 2. Slack 메시지 검색 (클라이언트가 있는 경우)
-      if (slackClient) {
-        results.slackMessages = await this.searchSlackMessages(query, slackClient);
+      // 1~3. Drive, Slack, Atlassian 병렬 실행 (독립적 소스)
+      const productType = this.detectProductFromQuery(query);
 
-        // 3. 제품별 전문 검색 추가
-        const productType = this.detectProductFromQuery(query);
-        if (productType) {
-          const productMessages = await this.searchByProduct(productType, query, slackClient);
-          results.slackMessages = [...results.slackMessages, ...productMessages]
-            .slice(0, 8); // 중복 제거 및 제한
-        }
+      const [driveResult, slackResult, atlassianResult] = await Promise.allSettled([
+        this.searchDriveDocuments(query),
+        slackClient
+          ? this.searchSlackMessages(query, slackClient).then(async (msgs) => {
+              // 제품별 전문 검색도 병렬로 포함
+              if (productType) {
+                const productMsgs = await this.searchByProduct(productType, query, slackClient);
+                return [...msgs, ...productMsgs].slice(0, 8);
+              }
+              return msgs;
+            })
+          : Promise.resolve([]),
+        this.searchAtlassian(query)
+      ]);
+
+      results.documents = driveResult.status === 'fulfilled' ? driveResult.value : [];
+      results.slackMessages = slackResult.status === 'fulfilled' ? slackResult.value : [];
+
+      if (atlassianResult.status === 'fulfilled') {
+        results.confluence = atlassianResult.value.confluence || [];
+        results.jira = atlassianResult.value.jira || [];
       }
 
-      // 4. Atlassian (Jira/Confluence) 검색
-      const atlassianResults = await this.searchAtlassian(query);
-      results.confluence = atlassianResults.confluence;
-      results.jira = atlassianResults.jira;
-
-      // 5. 컨텍스트 생성
-      results.context = this.buildContext(results.documents, results.slackMessages, results.confluence, results.jira);
+      // 4. 컨텍스트 생성 (제품 지식뱅크 포함)
+      results.context = this.buildContext(
+        results.documents, results.slackMessages,
+        results.confluence, results.jira,
+        kbResults.context
+      );
 
       return results;
     } catch (error) {
-      console.error('RAG search error:', error);
+      console.error('RAG search error:', error.message);
       return results;
     }
   }
@@ -329,8 +347,13 @@ export class MarkAnyRAG {
   }
 
   // RAG 컨텍스트 구성
-  buildContext(documents, slackMessages, confluencePages = [], jiraIssues = []) {
+  buildContext(documents, slackMessages, confluencePages = [], jiraIssues = [], productKBContext = '') {
     let context = '';
+
+    // 제품 지식뱅크 (최우선)
+    if (productKBContext) {
+      context += productKBContext + '\n\n';
+    }
 
     if (documents.length > 0) {
       context += '관련 문서 (Google Drive):\n';
@@ -434,8 +457,16 @@ AI Sentinel: AI 기반 보안 솔루션
   }
 }
 
-// Note: RAG instances should be created per-request with credentials
-// export const markanyRAG = new MarkAnyRAG();
+// Singleton RAG instance - initialized with env vars or file-based credentials
+export const markanyRAG = new MarkAnyRAG(
+  process.env.GOOGLE_SERVICE_ACCOUNT_KEY || 'google-service-account.json',
+  process.env.GOOGLE_DRIVE_FOLDER_IDS || null,
+  {
+    domain: process.env.ATLASSIAN_DOMAIN || null,
+    email: process.env.ATLASSIAN_EMAIL || null,
+    apiToken: process.env.ATLASSIAN_API_TOKEN || null
+  }
+);
 
 // Google Drive API 헬퍼 함수들 (향후 구현)
 export class GoogleDriveIntegration {

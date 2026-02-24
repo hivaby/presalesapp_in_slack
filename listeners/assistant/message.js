@@ -1,4 +1,4 @@
-import { runAI, formatResponse, detectProduct } from '../../ai/index.js';
+import { runAI, runMultiHopAI, formatResponse, detectProduct } from '../../ai/index.js';
 import { markanyRAG } from '../../ai/rag.js';
 import { feedbackBlock } from '../views/feedback_block.js';
 
@@ -78,13 +78,13 @@ export const message = async ({ client, context, logger, message, getThreadConte
       return;
     }
 
-    /** Scenario 2: MarkAny RAG 기반 대화 */
+    /** Scenario 2: MarkAny RAG 기반 대화 (Multi-Hop 지원) */
     // 제품 감지
     const detectedProduct = detectProduct(message.text);
     
-    // RAG 검색 수행 (제품별 최적화)
-    const ragResults = await markanyRAG.search(message.text, client);
-    
+    // RAG 검색 함수 래퍼 (multi-hop에서 hop별로 호출됨)
+    const ragSearchFn = (query) => markanyRAG.search(query, client);
+
     // 스레드 히스토리 가져오기 (최근 10개 메시지만)
     const thread = await client.conversations.replies({
       channel,
@@ -103,16 +103,19 @@ export const message = async ({ client, context, logger, message, getThreadConte
     // 대화 컨텍스트 구성
     const conversationContext = threadHistory.slice(-5).join('\n'); // 최근 5개 대화만
     
-    // MarkAny AI 호출 (RAG 컨텍스트 + 대화 히스토리 포함)
-    const answer = await runAI(message.text, ragResults.context, conversationContext);
+    // Multi-Hop AI 호출 (복합 질문 자동 감지 및 분해)
+    const result = await runMultiHopAI(message.text, ragSearchFn, conversationContext);
     
     // 출처 정보 포함하여 포맷팅
-    const sources = [...ragResults.documents, ...ragResults.slackMessages];
-    const formattedAnswer = formatResponse(answer, sources);
+    const formattedAnswer = formatResponse(result.answer, result.sources);
     
-    // 제품별 추가 정보 제공
+    // Multi-hop 분석 과정 표시 (선택)
     let finalAnswer = formattedAnswer;
-    if (detectedProduct && sources.length === 0) {
+    if (result.isMultiHop && result.hops?.length > 0) {
+      finalAnswer += `\n\n🔗 *${result.hops.length}단계 분석을 통해 답변을 생성했습니다.*`;
+    }
+
+    if (detectedProduct && result.sources.length === 0) {
       finalAnswer += `\n\n💡 **${detectedProduct} 관련 추가 도움이 필요하시면:**\n• 제품 문서: [MarkAny ${detectedProduct} 가이드](https://drive.google.com)\n• 기술 지원: <#C1234567890>\n• 세일즈 문의: <#C0987654321>`;
     }
 
@@ -127,7 +130,7 @@ export const message = async ({ client, context, logger, message, getThreadConte
     await streamer.stop({ blocks: [feedbackBlock] });
     
     // 사용 통계 로깅 (선택사항)
-    logger.info(`MarkAny Assistant - Product: ${detectedProduct || 'General'}, Sources: ${sources.length}, User: ${userId}`);
+    logger.info(`MarkAny Assistant - Product: ${detectedProduct || 'General'}, Sources: ${result.sources?.length || 0}, User: ${userId}`);
 
   } catch (e) {
     logger.error('MarkAny Assistant error:', e);

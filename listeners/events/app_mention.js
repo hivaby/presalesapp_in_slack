@@ -1,4 +1,4 @@
-import { runAI, formatResponse, detectProduct } from '../../ai/index.js';
+import { runAI, runMultiHopAI, formatResponse, detectProduct } from '../../ai/index.js';
 import { markanyRAG } from '../../ai/rag.js';
 import { feedbackBlock } from '../views/feedback_block.js';
 
@@ -31,8 +31,8 @@ export const appMentionCallback = async ({ event, client, logger, say }) => {
     // 제품 감지
     const detectedProduct = detectProduct(cleanText);
 
-    // MarkAny RAG 검색 수행
-    const ragResults = await markanyRAG.search(cleanText, client);
+    // MarkAny RAG 검색 수행 (Multi-Hop 지원)
+    const ragSearchFn = (query) => markanyRAG.search(query, client);
     
     // 채널 컨텍스트 가져오기 (최근 몇 개 메시지)
     let channelContext = '';
@@ -51,12 +51,15 @@ export const appMentionCallback = async ({ event, client, logger, say }) => {
       logger.warn('Could not fetch channel context:', error);
     }
 
-    // MarkAny AI 호출 (RAG 컨텍스트 포함)
-    const aiResponse = await runAI(cleanText, ragResults.context, channelContext);
+    // Multi-Hop AI 호출 (복합 질문 자동 감지)
+    const result = await runMultiHopAI(cleanText, ragSearchFn, channelContext);
     
     // 출처 정보 포함하여 포맷팅
-    const sources = [...ragResults.documents, ...ragResults.slackMessages];
-    let formattedResponse = formatResponse(aiResponse, sources);
+    let formattedResponse = formatResponse(result.answer, result.sources);
+    
+    if (result.isMultiHop && result.hops?.length > 0) {
+      formattedResponse += `\n\n🔗 *${result.hops.length}단계 분석을 통해 답변을 생성했습니다.*`;
+    }
 
     // 제품별 추가 정보 제공
     if (detectedProduct) {
